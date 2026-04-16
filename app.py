@@ -38,7 +38,10 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # --- Tab 1: N-gram Language Model ---
 with tab1:
     st.header("基于统计的 N 元语言模型")
-    st.markdown("使用 NLTK 构建 Trigram 模型，并计算句子的生成概率（支持加一平滑）。")
+    st.markdown("使用 NLTK 构建 Trigram 模型，观察**数据稀疏问题（零概率）**及**加法平滑（Additive Smoothing）**的作用机制。")
+    
+    st.latex(r"P(w_i|w_{i-n+1}^{i-1}) = \frac{\delta + C(w_{i-n+1}^{i})}{\delta|V| + \sum_{w_i} C(w_{i-n+1}^{i})}")
+    st.markdown("公式说明：$\delta$ 为平滑参数（当 $\delta=1$ 时即为加一平滑），$|V|$ 为词表大小。")
     
     corpus_input = st.text_area(
         "输入基础英文语料", 
@@ -46,9 +49,11 @@ with tab1:
         height=150
     )
     
-    sentence_input = st.text_input("输入要计算概率的句子", "The quick brown fox")
+    sentence_input = st.text_input("输入要计算概率的句子", "The brown dog is quick")
     
-    use_smoothing = st.checkbox("开启加一平滑 (Add-one / Laplace Smoothing)", value=False)
+    col_smooth, col_delta = st.columns([1, 2])
+    use_smoothing = col_smooth.checkbox("开启加法平滑", value=True)
+    delta = col_delta.slider("平滑参数 δ (Delta)", min_value=0.0, max_value=1.0, value=1.0, step=0.1) if use_smoothing else 0.0
     
     if st.button("构建模型并计算概率"):
         if not corpus_input or not sentence_input:
@@ -61,70 +66,80 @@ with tab1:
                 
                 n = 3 # Trigram
                 
-                # 训练 MLE 模型 (无平滑)
+                # 训练 MLE 模型
                 train_data_mle, vocab_mle = padded_everygram_pipeline(n, tokenized_text)
                 mle_model = MLE(n)
                 mle_model.fit(train_data_mle, vocab_mle)
                 
-                # 训练 Laplace 模型 (加一平滑)
-                train_data_lap, vocab_lap = padded_everygram_pipeline(n, tokenized_text)
-                laplace_model = Laplace(n)
-                laplace_model.fit(train_data_lap, vocab_lap)
+                # 训练平滑模型 (Lidstone)
+                from nltk.lm import Lidstone
+                train_data_smooth, vocab_smooth = padded_everygram_pipeline(n, tokenized_text)
+                if delta > 0:
+                    smooth_model = Lidstone(gamma=delta, order=n)
+                    smooth_model.fit(train_data_smooth, vocab_smooth)
+                else:
+                    smooth_model = mle_model
+                
+                vocab_size = len(mle_model.vocab)
+                st.info(f"📊 **当前语料词表大小 |V| = {vocab_size}**")
                 
                 # 预处理测试句子
                 test_tokens = word_tokenize(sentence_input.lower())
                 test_padded = list(pad_both_ends(test_tokens, n=n))
                 test_ngrams = list(ngrams(test_padded, n))
                 
-                st.write("**句子切分后的 Trigrams:**")
-                st.write(test_ngrams)
-                
-                # 计算概率
                 mle_prob = 1.0
-                laplace_prob = 1.0
+                smooth_prob = 1.0
                 has_zero_prob = False
                 
-                mle_probs_list = []
-                laplace_probs_list = []
+                details = []
                 
                 for ngram in test_ngrams:
                     context = ngram[:-1]
                     word = ngram[-1]
                     
-                    # MLE
+                    # 获取频数
+                    c_trigram = mle_model.counts[context][word]
+                    c_context = mle_model.counts[context].N() # 等价于 \sum C(w_{i-n+1}^i)
+                    
+                    # MLE 计算
                     p_mle = mle_model.score(word, context)
                     mle_prob *= p_mle
-                    mle_probs_list.append(p_mle)
                     if p_mle == 0:
                         has_zero_prob = True
                         
-                    # Laplace
-                    p_lap = laplace_model.score(word, context)
-                    laplace_prob *= p_lap
-                    laplace_probs_list.append(p_lap)
+                    # 平滑计算
+                    if delta > 0:
+                        p_smooth = smooth_model.score(word, context)
+                        calc_str = f"({c_trigram} + {delta}) / ({c_context} + {delta} × {vocab_size})"
+                    else:
+                        p_smooth = p_mle
+                        calc_str = f"{c_trigram} / {c_context}" if c_context > 0 else "0 (无上下文)"
+                        
+                    smooth_prob *= p_smooth
+                    
+                    details.append({
+                        "Trigram": str(ngram),
+                        "C(Trigram) 分子计数": c_trigram,
+                        "C(Context) 分母计数": c_context,
+                        "MLE 概率": f"{p_mle:.4f}",
+                        "平滑后概率": f"{p_smooth:.4f}",
+                        "平滑计算公式": calc_str
+                    })
                 
                 st.subheader("计算结果")
                 
-                if has_zero_prob:
-                    st.warning("⚠️ 输入句子中包含语料库未出现的 Trigram（零概率事件）！")
-                    st.markdown("展示平滑前后的概率对比：")
-                    
-                    col1, col2 = st.columns(2)
-                    col1.metric("MLE (平滑前) 联合概率", f"{mle_prob:.4e}")
-                    col2.metric("Laplace (平滑后) 联合概率", f"{laplace_prob:.4e}")
-                    
-                    # 详细对比
-                    df_compare = pd.DataFrame({
-                        "Trigram": [str(ng) for ng in test_ngrams],
-                        "MLE 概率": mle_probs_list,
-                        "Laplace 概率": laplace_probs_list
-                    })
-                    st.dataframe(df_compare)
-                else:
-                    if use_smoothing:
-                        st.success(f"当前使用的模型（加一平滑）计算得到的联合概率为: **{laplace_prob:.4e}**")
-                    else:
-                        st.success(f"当前使用的模型（无平滑）计算得到的联合概率为: **{mle_prob:.4e}**")
+                if has_zero_prob and delta == 0:
+                    st.error("⚠️ 输入句子中包含语料库未出现的 Trigram，导致**整个句子的联合概率直接归零**（数据稀疏问题）！建议开启平滑。")
+                elif has_zero_prob and delta > 0:
+                    st.success(f"✅ 包含未见 Trigram，但通过 $\delta={delta}$ 的平滑，概率余量被有效分配，解决了零概率问题！")
+                
+                col1, col2 = st.columns(2)
+                col1.metric("MLE (平滑前) 联合概率", f"{mle_prob:.4e}")
+                col2.metric(f"平滑后 ($\delta={delta}$) 联合概率", f"{smooth_prob:.4e}")
+                
+                st.markdown("**每个 Trigram 的详细计算过程（对比公式）：**")
+                st.dataframe(pd.DataFrame(details))
 
 
 # --- Tab 2: RNN Language Model ---
