@@ -3,6 +3,8 @@ import spacy
 from spacy import displacy
 import pandas as pd
 import json
+import subprocess
+import sys
 import streamlit.components.v1 as components
 
 # --- Setup & Configuration ---
@@ -12,6 +14,17 @@ st.set_page_config(page_title="知识图谱抽取与可视化系统", layout="wi
 def load_spacy_model():
     try:
         return spacy.load("en_core_web_sm")
+    except OSError:
+        # Streamlit Cloud may miss the language model in first boot.
+        subprocess.run(
+            [sys.executable, "-m", "spacy", "download", "en_core_web_sm"],
+            check=False,
+        )
+        try:
+            return spacy.load("en_core_web_sm")
+        except Exception as e:
+            st.error(f"Failed to load spaCy model after download: {e}")
+            return None
     except Exception as e:
         st.error(f"Failed to load spaCy model: {e}")
         return None
