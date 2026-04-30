@@ -2,7 +2,13 @@ import re
 import streamlit as st
 import nltk
 from nltk.translate.bleu_score import SmoothingFunction, sentence_bleu
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, pipeline
+from transformers import (
+    AutoModelForSeq2SeqLM,
+    AutoTokenizer,
+    MarianMTModel,
+    MarianTokenizer,
+    pipeline,
+)
 
 
 st.set_page_config(page_title="机器翻译实验平台（HW8）", layout="wide")
@@ -46,6 +52,28 @@ def load_nmt_direct_model():
     return tokenizer, model
 
 
+@st.cache_resource
+def load_marian_direct_model():
+    """
+    某些环境下 AutoTokenizer 对 Marian 兼容性有问题，显式使用 MarianTokenizer 兜底。
+    """
+    model_name = "Helsinki-NLP/opus-mt-en-zh"
+    tokenizer = MarianTokenizer.from_pretrained(model_name)
+    model = MarianMTModel.from_pretrained(model_name)
+    return tokenizer, model
+
+
+@st.cache_resource
+def load_mt5_fallback_model():
+    """
+    最终兜底：使用 mt5-small 提示式翻译，避免 Marian 在部分环境不可用时完全失败。
+    """
+    model_name = "google/mt5-small"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+    return tokenizer, model
+
+
 def nmt_translate(text: str) -> str:
     """
     统一翻译入口：
@@ -61,10 +89,32 @@ def nmt_translate(text: str) -> str:
             return item.get("translation_text") or item.get("generated_text") or str(item)
         return str(result)
     except Exception:
+        pass
+
+    # 兜底 1：AutoTokenizer + Seq2Seq
+    try:
         tokenizer, model = load_nmt_direct_model()
         inputs = tokenizer([text], return_tensors="pt", truncation=True)
         output_ids = model.generate(**inputs, max_length=256)
         return tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
+    except Exception:
+        pass
+
+    # 兜底 2：显式 MarianTokenizer/MarianMTModel
+    try:
+        tokenizer, model = load_marian_direct_model()
+        inputs = tokenizer([text], return_tensors="pt", truncation=True)
+        output_ids = model.generate(**inputs, max_length=256)
+        return tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
+    except Exception:
+        pass
+
+    # 兜底 3：mT5 提示式翻译
+    tokenizer, model = load_mt5_fallback_model()
+    prompt = f"translate English to Chinese: {text}"
+    inputs = tokenizer([prompt], return_tensors="pt", truncation=True)
+    output_ids = model.generate(**inputs, max_length=256)
+    return tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
 
 
 def rule_based_translate(text: str) -> str:
