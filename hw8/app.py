@@ -47,7 +47,7 @@ def load_nmt_direct_model():
     当 pipeline 任务名不兼容时，回退到直接 model.generate，保证可用性。
     """
     model_name = "Helsinki-NLP/opus-mt-en-zh"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
     model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
     return tokenizer, model
 
@@ -69,7 +69,7 @@ def load_mt5_fallback_model():
     最终兜底：使用 mt5-small 提示式翻译，避免 Marian 在部分环境不可用时完全失败。
     """
     model_name = "google/mt5-small"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
     model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
     return tokenizer, model
 
